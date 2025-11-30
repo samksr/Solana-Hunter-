@@ -80,7 +80,7 @@ function backupState(){
 }
 loadState();
 for (const u of USERS_TO_MONITOR) if (u && !state.users.includes(u)) state.users.push(u);
-save
+saveState();
   State();
 // PART 2: Telegram, Webhook (FIXED), and Scanning Logic
 
