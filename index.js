@@ -1,5 +1,5 @@
-// SOLANA HUNTER V13 - "CLEAN SWEEP"
-// PART 1: Config, Network & Swarm List
+// SOLANA HUNTER V14 - PERSISTENT WARLORD
+// PART 1: Config, Network & Disk Storage
 
 const { Worker } = require('worker_threads');
 const path = require('path');
@@ -27,8 +27,8 @@ let ENABLE_PUMPFUN = (process.env.ENABLE_PUMPFUN === 'true') || true;
 const POLL_INTERVAL_MS = 15000; 
 const MSG_INTERVAL_MS = 350; 
 const STATE_FILE = path.join(__dirname, 'state.json');
+const HISTORY_FILE = path.join(__dirname, 'history.json'); // NEW: Persistent Cache
 
-// ✅ RESTORED "AI AGENT" QUERY
 const DEFAULT_QUERIES = [
   'solana "contract address"',
   'deploying "pump.fun"',
@@ -36,7 +36,7 @@ const DEFAULT_QUERIES = [
   'solana "ai agent"'
 ];
 
-// --- 2. WORKER LINK ---
+// --- 2. WORKER SETUP ---
 const worker = new Worker(path.join(__dirname, 'worker.js'));
 const workerCallbacks = new Map();
 
@@ -59,7 +59,7 @@ function runWorkerTask(type, payload) {
   });
 }
 
-// --- 3. STATE ---
+// --- 3. STATE MANAGEMENT ---
 let state = { users: [], queries: [] };
 function loadState(){
   try {
@@ -70,22 +70,46 @@ function loadState(){
 function saveState(){ try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch(e){} }
 loadState();
 
+// --- 4. PERSISTENT HISTORY (STOPS FLOODS) ---
 const CACHE = new Map();
+
+function loadHistory() {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+      data.forEach(item => CACHE.set(item.id, item.ts));
+      console.log(`📚 Loaded ${CACHE.size} seen items from disk.`);
+    }
+  } catch (e) { console.error('History Load Error:', e.message); }
+}
+
+function saveHistory() {
+  try {
+    const data = Array.from(CACHE.entries()).map(([id, ts]) => ({ id, ts }));
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(data));
+  } catch (e) {}
+}
+
 function isCached(id) {
   if (CACHE.has(id)) return true;
   CACHE.set(id, Date.now());
+  saveHistory(); // Save immediately on new item
   return false;
 }
+
+// Auto Prune (Keep last 24h)
 setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of CACHE.entries()) if (now - ts > 86400000) CACHE.delete(id);
+  saveHistory();
 }, 3600000);
 
-// --- 4. THE SWARM (Network) ---
+loadHistory(); // LOAD ON STARTUP
+
+// --- 5. NETWORK ---
 const agent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 const axiosFast = axios.create({ timeout: 10000, httpsAgent: agent, headers: { 'User-Agent': 'Mozilla/5.0' } });
 
-// 20+ INSTANCES FOR MAX UPTIME
 const NITTER_NODES = [
   { host: "nitter.net", downUntil: 0 },
   { host: "xcancel.com", downUntil: 0 },
@@ -93,15 +117,7 @@ const NITTER_NODES = [
   { host: "nitter.tiekoetter.com", downUntil: 0 },
   { host: "nitter.privacyredirect.com", downUntil: 0 },
   { host: "nitter.lucabased.xyz", downUntil: 0 },
-  { host: "nitter.freereddit.com", downUntil: 0 },
-  { host: "nitter.no-logs.com", downUntil: 0 },
-  { host: "nitter.perennialte.ch", downUntil: 0 },
-  { host: "nitter.uni-sonia.com", downUntil: 0 },
-  { host: "nitter.moomoo.me", downUntil: 0 },
-  { host: "nitter.dafriser.net", downUntil: 0 },
-  { host: "nitter.soopy.moe", downUntil: 0 },
-  { host: "nitter.rawbit.420blaze.it", downUntil: 0 },
-  { host: "nitter.tinfoil-hat.net", downUntil: 0 }
+  { host: "nitter.freereddit.com", downUntil: 0 }
 ];
 
 function getHealthyNode() {
@@ -112,16 +128,22 @@ function getHealthyNode() {
 function markNodeDown(host) {
   const node = NITTER_NODES.find(n => n.host === host);
   if (node) {
-    node.downUntil = Date.now() + (60 * 1000); // 1 min cool-down
-    console.log(`⚠️ ${host} degr
-    aded.`);
+    node.downUntil = Date.now() + (60 * 1000); 
+    console.log(`⚠️ ${host
+                   } degraded.`);
   }
 }
 // PART 2: Scanners & Link Fixer
 
 function escapeHTML(text) {
   if (!text) return '';
-  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+  // Basic HTML escaping for Telegram
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function getButtons(ca, link = null) {
@@ -133,19 +155,18 @@ function getButtons(ca, link = null) {
     ]
   ];
   if (link) {
-    // FIX: Force any Nitter/Twitter link to open as x.com
-    // This solves "Source not opening"
+    // FIX: Force X.com link so it opens on mobile
     let cleanLink = link;
     try {
       const urlObj = new URL(link);
       cleanLink = `https://x.com${urlObj.pathname}`;
-    } catch(e) { cleanLink = link; } // Fallback if invalid URL
-    
+    } catch(e) { cleanLink = link; }
     btns.push([{ text: '🐦 Source (X.com)', url: cleanLink }]);
   }
   return btns;
 }
 
+// --- 6. SCANNERS ---
 async function fetchRSS(pathUrl){
   let node = getHealthyNode();
   if (!node) node = NITTER_NODES[Math.floor(Math.random() * NITTER_NODES.length)];
@@ -167,13 +188,14 @@ async function scanUsers(firstRun){
     if (!res || !res.items) continue;
     
     for (const item of res.items.slice(0, 10)){
+      // PERSISTENT CHECK: Checks disk history first
       if (isCached(item.id)) continue;
       if (firstRun) continue; 
 
       const link = item.link || `https://x.com/${user}`;
-      let msg = `<b>🐦 @${escapeHTML(user)} Tweeted:</b>\n\n${escapeHTML(item.snippet)}`;
       
-      // Basic button for tweets without CA
+      // item.snippet is CLEAN TEXT now (no HTML)
+      let msg = `<b>🐦 @${escapeHTML(user)} Tweeted:</b>\n\n${escapeHTML(item.snippet)}`;
       let buttons = [[{ text: '🐦 View Tweet', url: `https://x.com/${user}/status/${item.id.split('/').pop()}` }]];
 
       if (item.ca) {
@@ -207,8 +229,8 @@ async function runHunterQueries(firstRun){
       await enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(item.ca, link) } });
     }
   }
-}
-// PART 3: Server & UI Cleanup
+        }
+// PART 3: Server, Dashboard & Toggles
 
 // --- SNIPER ---
 let pumpWS = null;
@@ -260,14 +282,13 @@ app.get('/health', (req, res) => res.json({ status: 'ok', worker: 'active' }));
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🚀 V13 Cleanup Started on Port ${PORT}`);
+  console.log(`🚀 V14 Persistent Started on Port ${PORT}`);
   try { await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${WEBHOOK_BASE_URL}/webhook`); } catch(e){}
   
-  // 🔥 FIX: Send a message on startup to REMOVE old keyboards
   setTimeout(() => {
-    bot.sendMessage(TELEGRAM_CHAT_ID, '<b>♻️ System Loaded. UI Cleaned.</b>', { 
+    bot.sendMessage(TELEGRAM_CHAT_ID, '<b>♻️ System Loaded. History Restored.</b>', { 
       parse_mode: 'HTML',
-      reply_markup: { remove_keyboard: true } // THIS KILLS THE SQUARE 4 DOTS
+      reply_markup: { remove_keyboard: true } 
     }).catch(()=>{});
   }, 5000);
 });
@@ -304,20 +325,35 @@ bot.on('message', async (msg) => {
   const text = msg.text.trim();
   
   if (text === '/start' || text === '/admin') {
-    // Also remove keyboard on /start just in case
     await bot.sendMessage(cid, 'Loading...', { reply_markup: { remove_keyboard: true } });
     return sendDashboard(cid);
   }
   
-  if (text === '/help') return bot.sendMessage(cid, `<b>Commands:</b>\n/adduser [name]\n/removeuser [name]\n/addquery [text]\n/removequery [text]\n/listusers\n/listqueries`, { parse_mode: 'HTML' });
+  if (text === '/health') {
+    const report = NITTER_NODES.map(n => {
+        const s = n.downUntil > Date.now() ? `🔴` : '🟢';
+        return `${s} <b>${n.host}</b>`;
+    }).join('\n');
+    return bot.sendMessage(cid, `<b>🏥 Network Health:</b>\n\n${report}`, { parse_mode: 'HTML' });
+  }
+
+  if (text === '/help') return bot.sendMessage(cid, `<b>Commands:</b>\n/adduser [name]\n/removeuser [name]\n/addquery [text]\n/removequery [text]\n/listusers\n/listqueries\n/health`, { parse_mode: 'HTML' });
   
   if (text.startsWith('/adduser ')) {
     const u = text.split(' ')[1].replace('@', '');
     if(u && !state.users.includes(u)) { state.users.push(u); saveState(); bot.sendMessage(cid, `✅ Added: ${u}`, { parse_mode: 'HTML' }); }
   }
+  if (text.startsWith('/removeuser ')) {
+    const u = text.split(' ')[1].replace('@', '');
+    if(u) { state.users = state.users.filter(x => x !== u); saveState(); bot.sendMessage(cid, `🗑️ Removed: ${u}`, { parse_mode: 'HTML' }); }
+  }
   if (text.startsWith('/addquery ')) {
     const q = text.substring(10).trim();
     if(q && !state.queries.includes(q)) { state.queries.push(q); saveState(); bot.sendMessage(cid, `✅ Added: ${q}`, { parse_mode: 'HTML' }); }
+  }
+  if (text.startsWith('/removequery ')) {
+    const q = text.substring(13).trim();
+    if(q) { state.queries = state.queries.filter(x => x !== q); saveState(); bot.sendMessage(cid, `🗑️ Removed: ${q}`, { parse_mode: 'HTML' }); }
   }
   if (text === '/listusers') return bot.sendMessage(cid, `<b>Users:</b>\n${state.users.join('\n')}`, { parse_mode: 'HTML' });
   if (text === '/listqueries') return bot.sendMessage(cid, `<b>Queries:</b>\n${state.queries.join('\n')}`, { parse_mode: 'HTML' });
@@ -325,21 +361,42 @@ bot.on('message', async (msg) => {
 
 async function sendDashboard(chatId, msgId = null) {
   const healthy = NITTER_NODES.filter(n => n.downUntil < Date.now()).length;
-  const status = `<b>🛡️ SOLANA HUNTER V13</b>\n\n👤 Users: ${state.users.length}\n🔎 Queries: ${state.queries.length}\n📡 Swarm: ${healthy}/${NITTER_NODES.length}\n\nRunning...`;
-  const markup = { inline_keyboard: [[{ text: '🔄 Refresh', callback_data: 'REFRESH' }]] };
+  const status = `<b>🛡️ SOLANA HUNTER V14</b>\n\n👤 Users: ${state.users.length}\n🔎 Queries: ${state.queries.length}\n📡 Swarm: ${healthy}/${NITTER_NODES.length}\n💊 PumpFun: ${ENABLE_PUMPFUN?'ON':'OFF'}\n🔷 Raydium: ${ENABLE_RAYDIUM?'ON':'OFF'}`;
+  
+  const markup = { 
+    inline_keyboard: [
+      [{ text: '💊 Toggle PumpFun', callback_data: 'PF_TOGGLE'}, { text: '🔷 Toggle Raydium', callback_data: 'RAY_TOGGLE'}],
+      [{ text: '🔄 Refresh', callback_data: 'REFRESH' }, { text: '🏥 Health', callback_data: 'HEALTH' }]
+    ] 
+  };
+  
   if(msgId) try{ await bot.editMessageText(status, { chat_id: chatId, message_id: msgId, parse_mode: 'HTML', reply_markup: markup }); }catch(e){}
   else await bot.sendMessage(chatId, status, { parse_mode: 'HTML', reply_markup: markup });
 }
 
 bot.on('callback_query', async (q) => {
   if (q.message.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  if (q.data === 'REFRESH') sendDashboard(TELEGRAM_CHAT_ID, q.message.message_id);
+  const d = q.data;
+  
+  if (d === 'PF_TOGGLE') { ENABLE_PUMPFUN = !ENABLE_PUMPFUN; if(ENABLE_PUMPFUN && !pumpWS) startPumpFun(); if(!ENABLE_PUMPFUN && pumpWS) {pumpWS.close(); pumpWS=null;} }
+  if (d === 'RAY_TOGGLE') ENABLE_RAYDIUM = !ENABLE_RAYDIUM;
+  
+  if (d === 'HEALTH') {
+    const report = NITTER_NODES.map(n => {
+        const s = n.downUntil > Date.now() ? `🔴` : '🟢';
+        return `${s} <b>${n.host}</b>`;
+    }).join('\n');
+    await bot.sendMessage(TELEGRAM_CHAT_ID, `<b>🏥 Network Health:</b>\n\n${report}`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  if (d === 'REFRESH' || d.includes('TOGGLE')) sendDashboard(TELEGRAM_CHAT_ID, q.message.message_id);
   await bot.answerCallbackQuery(q.id);
 });
 
 // --- LOOP ---
 async function startSafeLoop(){
-  console.log('⚔️ V13 Clean Engine - Syncing...');
+  console.log('⚔️ V14 Persistent Engine - Syncing...');
   let firstRun = true; 
   if (ENABLE_PUMPFUN) startPumpFun();
   while(true){
