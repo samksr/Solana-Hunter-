@@ -1,4 +1,4 @@
-// worker.js - HTML Stripper & Parser
+// worker.js - HTML Decoder & Parser
 
 const { parentPort } = require('worker_threads');
 const RSSParser = require('rss-parser');
@@ -10,10 +10,24 @@ const parser = new RSSParser({
 
 const BAD_WORDS = ['honeypot', 'scam', 'rug', 'steal', 'phish', 'fake_token', 'test_token'];
 
-// CRITICAL FIX: Removes <span>, <div>, <br> tags
-function stripHtml(html) {
+// FIX: Decodes &lt; into <, then strips tags
+function cleanText(html) {
   if (!html) return '';
-  return html.replace(/<[^>]*>?/gm, '').trim();
+  
+  // 1. Decode Entities
+  let text = html
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+
+  // 2. Strip Tags
+  text = text.replace(/<[^>]*>?/gm, '');
+  
+  // 3. Clean whitespace
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 function extractCA(text) {
@@ -35,17 +49,20 @@ parentPort.on('message', async (task) => {
 
       for (const item of (feed.items || [])) {
         const title = item.title || '';
-        // Prioritize snippet, fallback to description, STRIP HTML
+        // Combine all possible content fields
         const rawContent = item.contentSnippet || item.content || item.description || '';
-        const cleanContent = stripHtml(rawContent).substring(0, 300);
         
-        const combined = `${title} ${cleanContent}`;
+        // CLEAN THE TEXT
+        const cleanContent = cleanText(rawContent).substring(0, 350);
+        const cleanTitle = cleanText(title).substring(0, 100);
+        
+        const combined = `${cleanTitle} ${cleanContent}`;
 
         cleanItems.push({
           id: item.id || item.guid || item.link,
           link: item.link,
-          title: title.substring(0, 100),
-          snippet: cleanContent, // Sending Clean Text
+          title: cleanTitle,
+          snippet: cleanContent,
           ca: extractCA(combined),
           suspicious: isSuspicious(combined),
           date: item.isoDate
@@ -55,7 +72,6 @@ parentPort.on('message', async (task) => {
       parentPort.postMessage({ id: task.id, success: true, data: cleanItems });
     } catch (e) {
       parentPort.postMessage({ id: task.id, success: false, error: e.message });
-   
     }
   }
 });
