@@ -1,0 +1,20 @@
+{
+  "name": "solana-hunter-bot",
+  "version": "1.0.0",
+  "description": "Ultra-Stable Solana Hunter Bot with Ultra Dashboard",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "reset-webhook": "node utils/webhook-reset.js",
+    "ping": "node utils/self-pinger.js"
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "node-telegram-bot-api": "^0.63.0",
+    "rss-parser": "^3.13.0",
+    "ws": "^8.13.0"
+  }
+}
