@@ -1,4 +1,4 @@
-// index.js — Solana Hunter Bot (Fixed & Optimized)
+// index.js — Solana Hunter Bot (Railway Fix Applied)
 // PART 1: Config, State, and Helpers
 
 const fs = require('fs');
@@ -10,7 +10,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const WebSocket = require('ws');
 require('dotenv').config();
 
-// -------------------- Configuration & Environment --------------------
+// -------------------- Configuration --------------------
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const WEBHOOK_BASE_URL = (process.env.WEBHOOK_BASE_URL || '').replace(/\/$/, '');
@@ -80,8 +80,9 @@ function backupState(){
 }
 loadState();
 for (const u of USERS_TO_MONITOR) if (u && !state.users.includes(u)) state.users.push(u);
-saveState();
-// PART 2: Telegram, Nitter, and Scanning Logic
+save
+  State();
+// PART 2: Telegram, Webhook (FIXED), and Scanning Logic
 
 // -------------------- Telegram & Webhook --------------------
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
@@ -89,21 +90,20 @@ const app = express();
 app.use(express.json());
 
 app.get('/health', (req,res)=> res.json({status:'ok', ts: nowISO()}));
+
+// FIX 1: Instant 200 OK response to prevent 502 Errors
 app.post('/webhook', (req,res)=>{
-  try {
-    res.sendStatus(200);
-    setImmediate(()=> {
-      try { bot.processUpdate(req.body); }
-      catch(e){ throttledLog('processUpdate error', e && e.message); }
-    });
-  } catch (e) {
-    throttledLog('webhook handler error', e && e.message);
-    try { res.sendStatus(200); } catch(_) {}
-  }
+  res.status(200).send('OK'); 
+  setImmediate(()=> {
+    try { bot.processUpdate(req.body); }
+    catch(e){ throttledLog('processUpdate error', e && e.message); }
+  });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, ()=> {
+
+// FIX 2: Bind to 0.0.0.0 for Railway support
+app.listen(PORT, '0.0.0.0', ()=> {
   safeLog('Server listening on', PORT);
   safeLog('Webhook URL:', WEBHOOK_BASE_URL + '/webhook');
   (async ()=>{
@@ -305,6 +305,7 @@ async function checkNewPools(){
     }
   } catch (e){ throttledLog('checkNewPools failed', e.message); }
 }
+
 // PART 3: PumpFun, Admin Dashboard, and Startup
 
 // -------------------- PumpFun WS Sniper --------------------
