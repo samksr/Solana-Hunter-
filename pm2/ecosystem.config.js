@@ -3,6 +3,7 @@ module.exports = {
     name: "solana-hunter-bot",
     script: "index.js",
     watch: false,
-    autorestart: true
+    autorestart: true,
+    max_memory_restart: '450M' // Safety cap
   }]
 };
