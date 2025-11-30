@@ -1,5 +1,5 @@
-// SOLANA HUNTER V14 - PERSISTENT WARLORD
-// PART 1: Config, Network & Disk Storage
+// SOLANA HUNTER V15 - CLEAN TEXT & HIGH SIGNAL
+// PART 1: Config & Persistent History
 
 const { Worker } = require('worker_threads');
 const path = require('path');
@@ -11,7 +11,7 @@ const WebSocket = require('ws');
 const https = require('https'); 
 require('dotenv').config();
 
-// --- 1. CONFIG ---
+// --- 1. CONFIGURATION ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const WEBHOOK_BASE_URL = (process.env.WEBHOOK_BASE_URL || '').replace(/\/$/, '');
@@ -27,13 +27,18 @@ let ENABLE_PUMPFUN = (process.env.ENABLE_PUMPFUN === 'true') || true;
 const POLL_INTERVAL_MS = 15000; 
 const MSG_INTERVAL_MS = 350; 
 const STATE_FILE = path.join(__dirname, 'state.json');
-const HISTORY_FILE = path.join(__dirname, 'history.json'); // NEW: Persistent Cache
+const HISTORY_FILE = path.join(__dirname, 'history.json');
 
+// ✅ HIGH VALUE QUERIES (Requested Upgrade)
 const DEFAULT_QUERIES = [
   'solana "contract address"',
   'deploying "pump.fun"',
   '"ca renounced" solana',
-  'solana "ai agent"'
+  'solana "ai agent"',
+  'solana "liquidity locked"',
+  'solana "fair launch"',
+  'solana "gem" -scam',
+  'solana "minting now"'
 ];
 
 // --- 2. WORKER SETUP ---
@@ -43,7 +48,8 @@ const workerCallbacks = new Map();
 worker.on('message', (msg) => {
   const cb = workerCallbacks.get(msg.id);
   if (cb) {
-    msg.success ? cb.resolve(msg.data) : cb.reject(new Error(msg.error));
+    if (msg.success) cb.resolve(msg.data);
+    else cb.reject(new Error(msg.error));
     workerCallbacks.delete(msg.id);
   }
 });
@@ -59,7 +65,7 @@ function runWorkerTask(type, payload) {
   });
 }
 
-// --- 3. STATE MANAGEMENT ---
+// --- 3. STATE ---
 let state = { users: [], queries: [] };
 function loadState(){
   try {
@@ -70,7 +76,7 @@ function loadState(){
 function saveState(){ try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch(e){} }
 loadState();
 
-// --- 4. PERSISTENT HISTORY (STOPS FLOODS) ---
+// --- 4. PERSISTENT HISTORY (NO FLOODS) ---
 const CACHE = new Map();
 
 function loadHistory() {
@@ -78,9 +84,9 @@ function loadHistory() {
     if (fs.existsSync(HISTORY_FILE)) {
       const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
       data.forEach(item => CACHE.set(item.id, item.ts));
-      console.log(`📚 Loaded ${CACHE.size} seen items from disk.`);
+      console.log(`📚 Loaded ${CACHE.size} history items.`);
     }
-  } catch (e) { console.error('History Load Error:', e.message); }
+  } catch (e) {}
 }
 
 function saveHistory() {
@@ -93,18 +99,17 @@ function saveHistory() {
 function isCached(id) {
   if (CACHE.has(id)) return true;
   CACHE.set(id, Date.now());
-  saveHistory(); // Save immediately on new item
   return false;
 }
 
-// Auto Prune (Keep last 24h)
+// Auto Prune & Save (Every 2 mins)
 setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of CACHE.entries()) if (now - ts > 86400000) CACHE.delete(id);
   saveHistory();
-}, 3600000);
+}, 120000);
 
-loadHistory(); // LOAD ON STARTUP
+loadHistory(); // Load immediately
 
 // --- 5. NETWORK ---
 const agent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
@@ -133,17 +138,11 @@ function markNodeDown(host) {
                    } degraded.`);
   }
 }
-// PART 2: Scanners & Link Fixer
+// PART 2: Scanners (Fixed UI & Links)
 
 function escapeHTML(text) {
   if (!text) return '';
-  // Basic HTML escaping for Telegram
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 function getButtons(ca, link = null) {
@@ -155,7 +154,6 @@ function getButtons(ca, link = null) {
     ]
   ];
   if (link) {
-    // FIX: Force X.com link so it opens on mobile
     let cleanLink = link;
     try {
       const urlObj = new URL(link);
@@ -166,7 +164,6 @@ function getButtons(ca, link = null) {
   return btns;
 }
 
-// --- 6. SCANNERS ---
 async function fetchRSS(pathUrl){
   let node = getHealthyNode();
   if (!node) node = NITTER_NODES[Math.floor(Math.random() * NITTER_NODES.length)];
@@ -187,14 +184,17 @@ async function scanUsers(firstRun){
     const res = await fetchRSS(`${user}/rss`);
     if (!res || !res.items) continue;
     
+    // Process items (Already cleaned by Worker)
     for (const item of res.items.slice(0, 10)){
-      // PERSISTENT CHECK: Checks disk history first
-      if (isCached(item.id)) continue;
+      
+      // CRITICAL: Cache check happens BEFORE firstRun check
+      // This ensures we mark items as seen even during silent startup
+      const cached = isCached(item.id);
+      if (cached) continue;
+      
       if (firstRun) continue; 
 
       const link = item.link || `https://x.com/${user}`;
-      
-      // item.snippet is CLEAN TEXT now (no HTML)
       let msg = `<b>🐦 @${escapeHTML(user)} Tweeted:</b>\n\n${escapeHTML(item.snippet)}`;
       let buttons = [[{ text: '🐦 View Tweet', url: `https://x.com/${user}/status/${item.id.split('/').pop()}` }]];
 
@@ -215,9 +215,12 @@ async function runHunterQueries(firstRun){
     if (!res || !res.items) continue;
 
     for (const item of res.items){
-      if (isCached(item.id)) continue;
+      const cached = isCached(item.id);
+      if (cached) continue;
+      
       if (!item.ca) continue; 
       if (item.suspicious) continue;
+      
       if (firstRun) continue; 
 
       const link = item.link || `https://x.com/i/status/${item.id.replace(/\D/g,'')}`;
@@ -229,7 +232,7 @@ async function runHunterQueries(firstRun){
       await enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(item.ca, link) } });
     }
   }
-        }
+}
 // PART 3: Server, Dashboard & Toggles
 
 // --- SNIPER ---
@@ -282,11 +285,12 @@ app.get('/health', (req, res) => res.json({ status: 'ok', worker: 'active' }));
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🚀 V14 Persistent Started on Port ${PORT}`);
+  console.log(`🚀 V15 Clean Started on Port ${PORT}`);
   try { await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${WEBHOOK_BASE_URL}/webhook`); } catch(e){}
   
   setTimeout(() => {
-    bot.sendMessage(TELEGRAM_CHAT_ID, '<b>♻️ System Loaded. History Restored.</b>', { 
+    // FORCE UI CLEANUP
+    bot.sendMessage(TELEGRAM_CHAT_ID, '<b>♻️ Bot Restored. UI Cleaned.</b>', { 
       parse_mode: 'HTML',
       reply_markup: { remove_keyboard: true } 
     }).catch(()=>{});
@@ -361,7 +365,7 @@ bot.on('message', async (msg) => {
 
 async function sendDashboard(chatId, msgId = null) {
   const healthy = NITTER_NODES.filter(n => n.downUntil < Date.now()).length;
-  const status = `<b>🛡️ SOLANA HUNTER V14</b>\n\n👤 Users: ${state.users.length}\n🔎 Queries: ${state.queries.length}\n📡 Swarm: ${healthy}/${NITTER_NODES.length}\n💊 PumpFun: ${ENABLE_PUMPFUN?'ON':'OFF'}\n🔷 Raydium: ${ENABLE_RAYDIUM?'ON':'OFF'}`;
+  const status = `<b>🛡️ SOLANA HUNTER V15</b>\n\n👤 Users: ${state.users.length}\n🔎 Queries: ${state.queries.length}\n📡 Swarm: ${healthy}/${NITTER_NODES.length}\n💊 PumpFun: ${ENABLE_PUMPFUN?'ON':'OFF'}\n🔷 Raydium: ${ENABLE_RAYDIUM?'ON':'OFF'}`;
   
   const markup = { 
     inline_keyboard: [
@@ -380,7 +384,6 @@ bot.on('callback_query', async (q) => {
   
   if (d === 'PF_TOGGLE') { ENABLE_PUMPFUN = !ENABLE_PUMPFUN; if(ENABLE_PUMPFUN && !pumpWS) startPumpFun(); if(!ENABLE_PUMPFUN && pumpWS) {pumpWS.close(); pumpWS=null;} }
   if (d === 'RAY_TOGGLE') ENABLE_RAYDIUM = !ENABLE_RAYDIUM;
-  
   if (d === 'HEALTH') {
     const report = NITTER_NODES.map(n => {
         const s = n.downUntil > Date.now() ? `🔴` : '🟢';
@@ -389,20 +392,24 @@ bot.on('callback_query', async (q) => {
     await bot.sendMessage(TELEGRAM_CHAT_ID, `<b>🏥 Network Health:</b>\n\n${report}`, { parse_mode: 'HTML' });
     return;
   }
-
   if (d === 'REFRESH' || d.includes('TOGGLE')) sendDashboard(TELEGRAM_CHAT_ID, q.message.message_id);
   await bot.answerCallbackQuery(q.id);
 });
 
 // --- LOOP ---
 async function startSafeLoop(){
-  console.log('⚔️ V14 Persistent Engine - Syncing...');
+  console.log('⚔️ V15 Clean Engine - Syncing...');
   let firstRun = true; 
   if (ENABLE_PUMPFUN) startPumpFun();
   while(true){
     try {
       await Promise.allSettled([ scanUsers(firstRun), runHunterQueries(firstRun), checkRaydiumGecko() ]);
-      if(firstRun) { console.log('✅ Sync Complete.'); firstRun = false; }
+      if(firstRun) { 
+        console.log('✅ Sync Complete. Monitoring LIVE.');
+        // Force save state after sync
+        saveHistory(); 
+        firstRun = false; 
+      }
     } catch(e){ console.error('Loop Error:', e.message); }
     await new Promise(r=>setTimeout(r, POLL_INTERVAL_MS));
   }
