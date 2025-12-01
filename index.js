@@ -1,4 +1,5 @@
-// SOLANA HUNTER V15 - COMPLETE FIXED VERSION (ONE FILE)
+// SOLANA HUNTER V16 - WARLORD EDITION
+
 const { Worker } = require('worker_threads');
 const path = require('path');
 const fs = require('fs');
@@ -21,10 +22,10 @@ if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID || !WEBHOOK_BASE_URL) {
 let ENABLE_RAYDIUM = (process.env.ENABLE_RAYDIUM === 'true') || false;
 let ENABLE_PUMPFUN = (process.env.ENABLE_PUMPFUN === 'true') || true;
 
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '15000', 10);
-const MSG_INTERVAL_MS = parseInt(process.env.MSG_INTERVAL_MS || '350', 10);
-const WORKER_TIMEOUT_MS = parseInt(process.env.WORKER_TIMEOUT_MS || '12000', 10);
-const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3', 10);
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '15000');
+const MSG_INTERVAL_MS = parseInt(process.env.MSG_INTERVAL_MS || '350');
+const WORKER_TIMEOUT_MS = parseInt(process.env.WORKER_TIMEOUT_MS || '12000');
+const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3');
 const STATE_FILE = path.join(__dirname, 'state.json');
 const HISTORY_FILE = path.join(__dirname, 'history.json');
 
@@ -43,41 +44,39 @@ let worker = null;
 const workerCallbacks = new Map();
 
 function createWorker() {
-  try {
-    worker = new Worker(path.join(__dirname, 'worker.js'));
-    worker.on('message', (msg) => {
-      const cb = workerCallbacks.get(msg.id);
-      if (cb) {
-        if (msg.success) cb.resolve(msg.data);
-        else cb.reject(new Error(msg.error));
-        workerCallbacks.delete(msg.id);
-      }
-    });
-    worker.on('error', (err) => {
-      console.error('❌ Worker error:', err.message);
-      setTimeout(createWorker, 1000);
-    });
-    worker.on('exit', (code) => {
-      if (code !== 0) console.error(`⚠️ Worker exited with code ${code}`);
-      setTimeout(createWorker, 1000);
-    });
-    console.log('✅ Worker thread initialized');
-  } catch (e) {
-    console.error('Failed to create worker:', e.message);
-  }
+  worker = new Worker(path.join(__dirname, 'worker.js'));
+  worker.on('message', (msg) => {
+    const cb = workerCallbacks.get(msg.id);
+    if (cb) {
+      if (msg.success) cb.resolve(msg.data);
+      else cb.reject(new Error(msg.error));
+      workerCallbacks.delete(msg.id);
+    }
+  });
+  worker.on('error', (err) => {
+    console.error('❌ Worker error:', err.message);
+    setTimeout(createWorker, 2000);
+  });
+  worker.on('exit', (code) => {
+    if (code !== 0) {
+      console.error('⚠️ Worker crashed, restarting...');
+      setTimeout(createWorker, 2000);
+    }
+  });
+  console.log('✅ Worker active');
 }
 
 createWorker();
 
 function runWorkerTask(type, payload) {
   return new Promise((resolve, reject) => {
-    if (!worker) return reject(new Error('Worker not ready'));
-    const taskId = Date.now() + Math.random();
-    workerCallbacks.set(taskId, { resolve, reject });
-    worker.postMessage({ id: taskId, type, ...payload });
+    if (!worker) return reject(new Error('Worker unavailable'));
+    const id = Date.now() + Math.random();
+    workerCallbacks.set(id, { resolve, reject });
+    worker.postMessage({ id, type, ...payload });
     setTimeout(() => {
-      if (workerCallbacks.has(taskId)) {
-        workerCallbacks.delete(taskId);
+      if (workerCallbacks.has(id)) {
+        workerCallbacks.delete(id);
         reject(new Error('Worker timeout'));
       }
     }, WORKER_TIMEOUT_MS);
@@ -85,105 +84,130 @@ function runWorkerTask(type, payload) {
 }
 
 let state = { users: [], queries: [] };
+
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
       state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
     } else {
-      state = {
-        users: (process.env.USERS_TO_MONITOR || '').split(',').map(s => s.trim()).filter(Boolean),
-        queries: DEFAULT_QUERIES
-      };
+      state.users = (process.env.USERS_TO_MONITOR || '').split(',').map(s => s.trim()).filter(Boolean);
+      state.queries = DEFAULT_QUERIES;
       saveState();
     }
   } catch (e) {
-    console.error('State Error:', e.message);
+    console.error('State load failed:', e.message);
   }
 }
+
 function saveState() {
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
   } catch (e) {}
 }
+
 loadState();
 
 const CACHE = new Map();
+
 function loadHistory() {
   try {
     if (fs.existsSync(HISTORY_FILE)) {
       const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
       data.forEach(item => CACHE.set(item.id, item.ts));
-      console.log(`📚 Loaded ${CACHE.size} history items.`);
+      console.log(`📚 Cache: ${CACHE.size} items`);
     }
   } catch (e) {}
 }
+
 function saveHistory() {
   try {
     const data = Array.from(CACHE.entries()).map(([id, ts]) => ({ id, ts }));
     fs.writeFileSync(HISTORY_FILE, JSON.stringify(data));
   } catch (e) {}
 }
+
 function isCached(id) {
   if (CACHE.has(id)) return true;
   CACHE.set(id, Date.now());
   return false;
 }
+
 setInterval(() => {
   const now = Date.now();
   for (const [id, ts] of CACHE.entries()) {
     if (now - ts > 86400000) CACHE.delete(id);
   }
-  saveHistory();
+  if (CACHE.size % 100 === 0) saveHistory();
 }, 120000);
+
 loadHistory();
 
-const agent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
+const agent = new https.Agent({ keepAlive: true });
 const axiosFast = axios.create({
   timeout: 10000,
   httpsAgent: agent,
-  headers: { 'User-Agent': 'Mozilla/5.0' }
+  headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
 });
 
 const NITTER_NODES = [
-  { host: "nitter.net", downUntil: 0 },
-  { host: "xcancel.com", downUntil: 0 },
-  { host: "nitter.poast.org", downUntil: 0 },
-  { host: "nitter.tiekoetter.com", downUntil: 0 },
-  { host: "nitter.privacyredirect.com", downUntil: 0 },
-  { host: "nitter.lucabased.xyz", downUntil: 0 },
-  { host: "nitter.freereddit.com", downUntil: 0 }
+  { host: "nitter.net", downUntil: 0, failures: 0 },
+  { host: "xcancel.com", downUntil: 0, failures: 0 },
+  { host: "nitter.poast.org", downUntil: 0, failures: 0 },
+  { host: "nitter.tiekoetter.com", downUntil: 0, failures: 0 },
+  { host: "nitter.privacyredirect.com", downUntil: 0, failures: 0 },
+  { host: "nitter.lucabased.xyz", downUntil: 0, failures: 0 },
+  { host: "nitter.freereddit.com", downUntil: 0, failures: 0 }
 ];
 
 function getHealthyNode() {
   const healthy = NITTER_NODES.filter(n => n.downUntil < Date.now());
-  return healthy.length > 0 ? healthy[Math.floor(Math.random() * healthy.length)] : NITTER_NODES[Math.floor(Math.random() * NITTER_NODES.length)];
+  if (healthy.length === 0) {
+    console.log('⚠️ No healthy nodes, resetting...');
+    NITTER_NODES.forEach(n => { n.downUntil = 0; n.failures = 0; });
+    return NITTER_NODES[0];
+  }
+  return healthy[Math.floor(Math.random() * healthy.length)];
 }
 
 function markNodeDown(host) {
   const node = NITTER_NODES.find(n => n.host === host);
-  if (node) node.downUntil = Date.now() + 60000;
-}
-
-async function fetchRSS(pathUrl) {
-  let node = getHealthyNode();
-  try {
-    const r = await axiosFast.get(`https://${node.host}/${pathUrl}?t=${Date.now()}`, { responseType: 'text' });
-    if (r.data.includes('over capacity')) throw new Error('RateLimit');
-    const items = await runWorkerTask('PARSE_RSS', { xml: r.data });
-    return { items: items || [], host: node.host };
-  } catch (e) {
-    markNodeDown(node.host);
-    return null;
+  if (node) {
+    node.failures = (node.failures || 0) + 1;
+    node.downUntil = Date.now() + Math.min(60000 * node.failures, 600000);
   }
+}
+async function fetchWithRetry(urlPath, maxRetries = MAX_RETRIES) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const node = getHealthyNode();
+    try {
+      const response = await axiosFast.get(`https://${node.host}/${urlPath}?t=${Date.now()}`, {
+        responseType: 'text'
+      });
+
+      if (response.data.includes('over capacity') || response.data.includes('error')) {
+        markNodeDown(node.host);
+        continue;
+      }
+
+      const items = await runWorkerTask('PARSE_RSS', { xml: response.data });
+      return { items: items || [], host: node.host };
+    } catch (e) {
+      markNodeDown(node.host);
+      if (attempt < maxRetries - 1) {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
+  }
+  return null;
 }
 
 function escapeHTML(text) {
-  if (!text) return '';
-  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+  return String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
-function getButtons(ca, link = null) {
-  const btns = [
+function getButtons(ca, link) {
+  const buttons = [
     [{ text: '🦄 Trojan', url: `https://t.me/solana_trojanbot?start=${ca}` }],
     [
       { text: '🦅 DexS', url: `https://dexscreener.com/solana/${ca}` },
@@ -193,27 +217,27 @@ function getButtons(ca, link = null) {
   if (link) {
     let cleanLink = link;
     try {
-      const urlObj = new URL(link);
-      cleanLink = `https://x.com${urlObj.pathname}`;
+      cleanLink = `https://x.com${new URL(link).pathname}`;
     } catch (e) {}
-    btns.push([{ text: '🐦 Source (X.com)', url: cleanLink }]);
+    buttons.push([{ text: '🐦 Source', url: cleanLink }]);
   }
-  return btns;
+  return buttons;
 }
 
 async function scanUsers(firstRun) {
   for (const user of state.users) {
-    const res = await fetchRSS(`${user}/rss`);
-    if (!res || !res.items) continue;
+    const res = await fetchWithRetry(`${user}/rss`);
+    if (!res?.items?.length) continue;
+
     for (const item of res.items.slice(0, 10)) {
-      const cached = isCached(item.id);
-      if (cached) continue;
-      if (firstRun) continue;
+      if (isCached(item.id) || firstRun) continue;
+
       const link = item.link || `https://x.com/${user}`;
-      let msg = `<b>🐦 @${escapeHTML(user)} Tweeted:</b>
+      let msg = `<b>🐦 @${escapeHTML(user)}:</b>
 
 ${escapeHTML(item.snippet)}`;
-      let buttons = [[{ text: '🐦 View Tweet', url: `https://x.com/${user}/status/${item.id.split('/').pop()}` }]];
+      let buttons = [[{ text: '🐦 Tweet', url: `https://x.com/${user}/status/${item.id.split('/').pop()}` }]];
+
       if (item.ca) {
         msg += `
 
@@ -224,71 +248,69 @@ ${escapeHTML(item.snippet)}`;
 
 <tg-spoiler>via ${res.host}</tg-spoiler>`;
       }
-      await enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: buttons } });
+      enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: buttons } });
     }
   }
 }
 
 async function runHunterQueries(firstRun) {
   for (const query of state.queries) {
-    const res = await fetchRSS(`search/rss?f=tweets&q=${encodeURIComponent(query)}`);
-    if (!res || !res.items) continue;
+    const res = await fetchWithRetry(`search/rss?f=tweets&q=${encodeURIComponent(query)}`);
+    if (!res?.items?.length) continue;
+
     for (const item of res.items) {
-      const cached = isCached(item.id);
-      if (cached) continue;
-      if (!item.ca) continue;
-      if (item.suspicious) continue;
-      if (firstRun) continue;
+      if (isCached(item.id) || !item.ca || item.suspicious || firstRun) continue;
+
       const link = item.link || `https://x.com/i/status/${item.id.replace(/D/g, '')}`;
-      const msg = `<b>🔎 Hit: "${escapeHTML(query)}"</b>
+      const msg = `<b>🔎 "${escapeHTML(query)}"</b>
 <b>💎 CA:</b> <code>${escapeHTML(item.ca)}</code>
 
 <i>${escapeHTML(item.snippet)}...</i>
 
 <tg-spoiler>via ${res.host}</tg-spoiler>`;
-      await enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(item.ca, link) } });
+      enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(item.ca, link) } });
     }
   }
 }
 
 let pumpWS = null;
+
 function startPumpFun() {
-  if (!ENABLE_PUMPFUN) return;
-  try {
-    pumpWS = new WebSocket('wss://pumpportal.fun/ws');
-    pumpWS.on('open', () => console.log('🟢 PumpFun Connected'));
-    pumpWS.on('message', data => {
-      try {
-        const p = JSON.parse(data);
-        const ca = p.mint || p.token;
-        if (ca && !isCached(ca)) {
-          const msg = `<b>💊 PumpFun Mint</b>
+  if (!ENABLE_PUMPFUN || pumpWS) return;
+  pumpWS = new WebSocket('wss://pumpportal.fun/ws');
+  pumpWS.on('open', () => console.log('🟢 PumpFun live'));
+  pumpWS.on('message', (data) => {
+    try {
+      const p = JSON.parse(data);
+      const ca = p.mint || p.token;
+      if (ca && !isCached(ca)) {
+        const msg = `<b>💊 PumpFun Mint</b>
 <code>${escapeHTML(ca)}</code>`;
-          enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(ca) } });
-        }
-      } catch (e) {}
-    });
-    pumpWS.on('error', () => setTimeout(startPumpFun, 5000));
-    pumpWS.on('close', () => setTimeout(startPumpFun, 3000));
-  } catch (e) {
-    setTimeout(startPumpFun, 5000);
-  }
+        enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(ca) } });
+      }
+    } catch (e) {}
+  });
+  pumpWS.on('close', () => { pumpWS = null; setTimeout(startPumpFun, 3000); });
+  pumpWS.on('error', () => { pumpWS = null; setTimeout(startPumpFun, 5000); });
 }
 
-async function checkRaydiumGecko() {
+async function checkRaydium() {
   if (!ENABLE_RAYDIUM) return;
   try {
     const { data } = await axiosFast.get('https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1');
-    for (const p of data?.data || []) {
-      if (p.attributes?.dex_id !== 'raydium') continue;
-      const mint = p.attributes.base_token_address;
+    for (const pool of data?.data || []) {
+      if (pool.attributes?.dex_id !== 'raydium') continue;
+      const mint = pool.attributes.base_token_address;
       if (!mint || isCached(mint)) continue;
-      const msg = `<b>🔷 Raydium New Pool</b>
-<b>${escapeHTML(p.attributes.name)}</b>
+
+      const msg = `<b>🔷 Raydium Pool</b>
+<b>${escapeHTML(pool.attributes.name)}</b>
 <code>${escapeHTML(mint)}</code>`;
-      await enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(mint) } });
+      enqueue(TELEGRAM_CHAT_ID, msg, { reply_markup: { inline_keyboard: getButtons(mint) } });
     }
-  } catch (e) {}
+  } catch (e) {
+    console.error('Raydium API failed');
+  }
 }
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
@@ -297,177 +319,229 @@ app.use(express.json());
 
 app.post('/webhook', (req, res) => {
   res.status(200).send('OK');
-  setImmediate(() => { try { bot.processUpdate(req.body); } catch (e) {} });
+  setImmediate(() => bot.processUpdate(req.body).catch(() => {}));
 });
+
 app.get('/health', (req, res) => {
   const healthy = NITTER_NODES.filter(n => n.downUntil < Date.now()).length;
-  res.json({ status: 'ok', worker: worker ? 'active' : 'down', cache_size: CACHE.size, healthy_nodes: healthy });
+  res.json({
+    status: 'alive',
+    worker: !!worker,
+    cache: CACHE.size,
+    nodes: `${healthy}/${NITTER_NODES.length}`,
+    pumpfun: !!pumpWS
+  });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🚀 V15 FIXED Started on Port ${PORT}`);
-  try {
-    await axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${WEBHOOK_BASE_URL}/webhook`);
-  } catch (e) {}
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 V16 listening on ${PORT}`);
+  axios.get(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook?url=${WEBHOOK_BASE_URL}/webhook`)
+    .catch(console.error);
+
   setTimeout(() => {
-    bot.sendMessage(TELEGRAM_CHAT_ID, '<b>♻️ Bot Restored. UI Cleaned.</b>', {
+    bot.sendMessage(TELEGRAM_CHAT_ID, '<b>⚔️ V16 WARLORD ONLINE</b>', {
       parse_mode: 'HTML',
       reply_markup: { remove_keyboard: true }
     }).catch(() => {});
-  }, 5000);
+  }, 3000);
 });
 
 const queue = [];
 let sending = false;
-function enqueue(chatId, text, opts = {}) {
-  queue.push({ chatId, text, opts });
+
+function enqueue(chatId, text, options = {}) {
+  queue.push({ chatId, text, options });
   if (!sending) processQueue();
 }
+
 async function processQueue() {
-  if (sending || queue.length === 0) return;
+  if (sending || !queue.length) return;
   sending = true;
-  while (queue.length > 0) {
-    const { chatId, text, opts } = queue.shift();
+
+  while (queue.length) {
+    const { chatId, text, options } = queue.shift();
     try {
-      await bot.sendMessage(chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true, ...opts });
+      await bot.sendMessage(chatId, text, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...options
+      });
     } catch (e) {
       if (e.response?.statusCode === 429) {
-        const wait = (e.response.parameters?.retry_after || 5) + 1;
-        queue.unshift({ chatId, text, opts });
-        await new Promise(r => setTimeout(r, wait * 1000));
+        const delay = (e.response.parameters?.retry_after || 5) * 1000;
+        queue.unshift({ chatId, text, options });
+        await new Promise(r => setTimeout(r, delay));
       }
     }
     await new Promise(r => setTimeout(r, MSG_INTERVAL_MS));
   }
   sending = false;
 }
-
 bot.on('message', async (msg) => {
-  if (!msg || !msg.text || msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+  if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID || !msg.text) return;
+
   const text = msg.text.trim();
   if (text === '/start' || text === '/admin') {
-    await bot.sendMessage(msg.chat.id, 'Loading...', { reply_markup: { remove_keyboard: true } });
-    return sendDashboard(msg.chat.id);
+    bot.sendMessage(msg.chat.id, 'Dashboard loading...', {
+      reply_markup: { remove_keyboard: true }
+    }).then(() => sendDashboard(msg.chat.id));
+    return;
   }
+
   if (text === '/health') {
-    const report = NITTER_NODES.map(n => {
-      const s = n.downUntil > Date.now() ? `🔴` : '🟢';
-      return `${s} <b>${n.host}</b>`;
+    const status = NITTER_NODES.map(n => {
+      const icon = n.downUntil > Date.now() ? '🔴' : '🟢';
+      return `${icon} <b>${n.host}</b>`;
     }).join('
 ');
-    return bot.sendMessage(TELEGRAM_CHAT_ID, `<b>🏥 Network Health:</b>
+    bot.sendMessage(TELEGRAM_CHAT_ID, `<b>🌐 Network:</b>
 
-${report}`, { parse_mode: 'HTML' });
+${status}`, { parse_mode: 'HTML' });
+    return;
   }
+
   if (text.startsWith('/adduser ')) {
-    const u = text.split(' ')[1]?.replace('@', '');
-    if (u && !state.users.includes(u)) {
-      state.users.push(u);
+    const user = text.split(' ')[1]?.replace('@', '');
+    if (user && !state.users.includes(user)) {
+      state.users.push(user);
       saveState();
-      bot.sendMessage(msg.chat.id, `✅ Added: ${u}`, { parse_mode: 'HTML' });
+      bot.sendMessage(msg.chat.id, `✅ <b>${user}</b> added`, { parse_mode: 'HTML' });
     }
   }
+
   if (text.startsWith('/removeuser ')) {
-    const u = text.split(' ')[1]?.replace('@', '');
-    if (u) {
-      state.users = state.users.filter(x => x !== u);
-      saveState();
-      bot.sendMessage(msg.chat.id, `🗑️ Removed: ${u}`, { parse_mode: 'HTML' });
-    }
+    const user = text.split(' ')[1]?.replace('@', '');
+    state.users = state.users.filter(u => u !== user);
+    saveState();
+    bot.sendMessage(msg.chat.id, `🗑️ <b>${user}</b> removed`, { parse_mode: 'HTML' });
   }
+
   if (text.startsWith('/addquery ')) {
-    const q = text.substring(10).trim();
-    if (q && !state.queries.includes(q)) {
-      state.queries.push(q);
+    const query = text.substring(10).trim();
+    if (query && !state.queries.includes(query)) {
+      state.queries.push(query);
       saveState();
-      bot.sendMessage(msg.chat.id, `✅ Added: ${q}`, { parse_mode: 'HTML' });
+      bot.sendMessage(msg.chat.id, `✅ <b>${query}</b> added`, { parse_mode: 'HTML' });
     }
   }
+
   if (text.startsWith('/removequery ')) {
-    const q = text.substring(13).trim();
-    if (q) {
-      state.queries = state.queries.filter(x => x !== q);
-      saveState();
-      bot.sendMessage(msg.chat.id, `🗑️ Removed: ${q}`, { parse_mode: 'HTML' });
-    }
+    const query = text.substring(13).trim();
+    state.queries = state.queries.filter(q => q !== query);
+    saveState();
+    bot.sendMessage(msg.chat.id, `🗑️ <b>${query}</b> removed`, { parse_mode: 'HTML' });
   }
-  if (text === '/listusers') return bot.sendMessage(msg.chat.id, `<b>Users:</b>
-${state.users.join('
-')}`, { parse_mode: 'HTML' });
-  if (text === '/listqueries') return bot.sendMessage(msg.chat.id, `<b>Queries:</b>
-${state.queries.join('
-')}`, { parse_mode: 'HTML' });
+
+  if (text === '/listusers') {
+    const users = state.users.length ? state.users.join('
+') : 'None';
+    bot.sendMessage(msg.chat.id, `<b>👥 Users (${state.users.length}):</b>
+
+${users}`, { parse_mode: 'HTML' });
+  }
+
+  if (text === '/listqueries') {
+    const queries = state.queries.join('
+');
+    bot.sendMessage(msg.chat.id, `<b>🔎 Queries (${state.queries.length}):</b>
+
+${queries}`, { parse_mode: 'HTML' });
+  }
 });
 
-async function sendDashboard(chatId, msgId = null) {
+async function sendDashboard(chatId, msgId) {
   const healthy = NITTER_NODES.filter(n => n.downUntil < Date.now()).length;
-  const status = `<b>🛡️ SOLANA HUNTER V15 FIXED</b>
+  const status = `<b>⚔️ SOLANA HUNTER V16</b>
 
-👤 Users: ${state.users.length}
-🔎 Queries: ${state.queries.length}
-📡 Swarm: ${healthy}/${NITTER_NODES.length}
-💊 PumpFun: ${ENABLE_PUMPFUN ? 'ON' : 'OFF'}
-🔷 Raydium: ${ENABLE_RAYDIUM ? 'ON' : 'OFF'}`;
-  const markup = {
+👥 Users: <b>${state.users.length}</b>
+🔎 Queries: <b>${state.queries.length}</b>
+📡 Nodes: <b>${healthy}/${NITTER_NODES.length}</b>
+💊 PumpFun: <b>${ENABLE_PUMPFUN ? '🟢' : '🔴'}</b>
+🔷 Raydium: <b>${ENABLE_RAYDIUM ? '🟢' : '🔴'}</b>
+⚙️ Cache: <b>${CACHE.size}</b>`;
+
+  const keyboard = {
     inline_keyboard: [
-      [{ text: '💊 Toggle PumpFun', callback_data: 'PF_TOGGLE' }, { text: '🔷 Toggle Raydium', callback_data: 'RAY_TOGGLE' }],
-      [{ text: '🔄 Refresh', callback_data: 'REFRESH' }, { text: '🏥 Health', callback_data: 'HEALTH' }]
+      [{ text: `💊 PumpFun ${ENABLE_PUMPFUN ? 'OFF' : 'ON'}`, callback_data: 'toggle_pf' }],
+      [{ text: `🔷 Raydium ${ENABLE_RAYDIUM ? 'OFF' : 'ON'}`, callback_data: 'toggle_ray' }],
+      [{ text: '🔄 Refresh', callback_data: 'refresh' }, { text: '🏥 Health', callback_data: 'health' }]
     ]
   };
+
   if (msgId) {
     try {
-      await bot.editMessageText(status, { chat_id: chatId, message_id: msgId, parse_mode: 'HTML', reply_markup: markup });
+      await bot.editMessageText(status, {
+        chat_id: chatId,
+        message_id: msgId,
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      });
     } catch (e) {}
   } else {
-    await bot.sendMessage(chatId, status, { parse_mode: 'HTML', reply_markup: markup });
+    await bot.sendMessage(chatId, status, { parse_mode: 'HTML', reply_markup: keyboard });
   }
 }
 
-bot.on('callback_query', async (q) => {
-  if (q.message.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-  const d = q.data;
-  if (d === 'PF_TOGGLE') {
+bot.on('callback_query', async (query) => {
+  if (query.message.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+  const data = query.data;
+  if (data === 'toggle_pf') {
     ENABLE_PUMPFUN = !ENABLE_PUMPFUN;
-    if (ENABLE_PUMPFUN && !pumpWS) startPumpFun();
-    if (!ENABLE_PUMPFUN && pumpWS) {
-      pumpWS.close();
-      pumpWS = null;
-    }
+    if (ENABLE_PUMPFUN) startPumpFun();
+    else if (pumpWS) { pumpWS.close(); pumpWS = null; }
   }
-  if (d === 'RAY_TOGGLE') ENABLE_RAYDIUM = !ENABLE_RAYDIUM;
-  if (d === 'HEALTH') {
-    const report = NITTER_NODES.map(n => {
-      const s = n.downUntil > Date.now() ? `🔴` : '🟢';
-      return `${s} <b>${n.host}</b>`;
+
+  if (data === 'toggle_ray') ENABLE_RAYDIUM = !ENABLE_RAYDIUM;
+
+  if (data === 'health') {
+    const health = NITTER_NODES.map(n => {
+      const status = n.downUntil > Date.now() ? '🔴' : '🟢';
+      return `${status} <b>${n.host}</b>`;
     }).join('
 ');
-    await bot.sendMessage(TELEGRAM_CHAT_ID, `<b>🏥 Network Health:</b>
+    bot.sendMessage(TELEGRAM_CHAT_ID, `<b>🌐 Health Check:</b>
 
-${report}`, { parse_mode: 'HTML' });
+${health}`, { parse_mode: 'HTML' });
+    bot.answerCallbackQuery(query.id);
     return;
   }
-  if (d === 'REFRESH' || d.includes('TOGGLE')) sendDashboard(TELEGRAM_CHAT_ID, q.message.message_id);
-  await bot.answerCallbackQuery(q.id);
+
+  sendDashboard(TELEGRAM_CHAT_ID, query.message.message_id);
+  bot.answerCallbackQuery(query.id);
 });
 
-async function startSafeLoop() {
-  console.log('⚔️ V15 Engine Starting...');
+async function mainLoop() {
+  console.log('⚔️ V16 starting...');
   let firstRun = true;
-  if (ENABLE_PUMPFUN) startPumpFun();
+
   while (true) {
     try {
-      await Promise.allSettled([scanUsers(firstRun), runHunterQueries(firstRun), checkRaydiumGecko()]);
+      await Promise.allSettled([
+        scanUsers(firstRun),
+        runHunterQueries(firstRun),
+        checkRaydium()
+      ]);
+
       if (firstRun) {
-        console.log('✅ Sync Complete. LIVE monitoring.');
+        console.log('✅ LIVE - All systems operational');
         firstRun = false;
       }
     } catch (e) {
-      console.error('Loop Error:', e.message);
+      console.error('Main loop error:', e.message);
     }
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS + Math.random() * 2000));
   }
 }
 
-startSafeLoop();
-console.log(`🚀 Ready! POLL=${POLL_INTERVAL_MS}ms`);
+process.on('SIGTERM', () => {
+  console.log('🛑 Graceful shutdown');
+  saveState();
+  saveHistory();
+  process.exit(0);
+});
+
+mainLoop();
+console.log(`🚀 V16 WARLORD - POLL:${POLL_INTERVAL_MS}ms READY`);
