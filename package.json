@@ -1,15 +1,9 @@
 {
-  "name": "solana-hunter-v15-immortal",
-  "version": "15.0.0",
-  "description": "Multi-Threaded Warlord Bot with Auto-Recovery & Enhanced Reliability",
+  "name": "solana-hunter-v16",
+  "version": "16.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "ping": "node utils/self-pinger.js",
-    "dev": "node --trace-warnings index.js"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "start": "node index.js"
   },
   "dependencies": {
     "axios": "^1.7.4",
